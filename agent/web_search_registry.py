@@ -56,7 +56,9 @@ def _configured_backend(capability: str) -> Optional[str]:
 
 # Paid providers first so existing paid setups don't get downgraded to a free
 # tier on upgrade; filtered by ``is_available()`` at walk time.
-_LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "searxng", "brave-free", "ddgs")
+# tinyfish trails the paid vendors and leads the keyless rungs: its search and fetch are
+# free of charge but key-gated, so it is not a keyless-ring member.
+_LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "tinyfish", "searxng", "brave-free", "ddgs")
 
 # Anonymous public free tiers (see plugins/web/keyless_mcp.py); strictly last
 # resort, i.e. zero web credentials and no importable ddgs. Unpinned keyless
