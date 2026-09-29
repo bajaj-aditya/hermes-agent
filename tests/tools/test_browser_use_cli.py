@@ -73,6 +73,14 @@ def _fake_cli(tmp_path, body):
     return str(script)
 
 
+def _chmod_nonexecutable(tmp_path) -> str:
+    """A real file at the resolved path with its executable bit stripped."""
+    path = tmp_path / "browser-use"
+    path.write_text("#!/bin/sh\necho stale\n", encoding="utf-8")
+    path.chmod(0o644)
+    return str(path)
+
+
 class TestModeDetection:
     def test_default_on_when_cli_available(self, monkeypatch):
         """Backend unset: Browser Use mode is the default when the CLI runs."""
@@ -124,6 +132,52 @@ class TestModeDetection:
         monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
+
+
+class TestCliDoctorStatus:
+    """``cli_doctor_status`` is the real, read-only readiness check ``hermes doctor`` uses instead
+    of trusting ``is_browser_use_cli_mode()`` (which stays True for an explicitly selected backend
+    even when the CLI is missing/broken — that gap is the confirmed doctor false positive)."""
+
+    def test_absent_when_pm_has_no_selection(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        ready, detail = bu_cli.cli_doctor_status()
+        assert ready is False
+        assert detail == "not installed"
+
+    def test_present_and_executable_is_ready(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho ok\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        ready, detail = bu_cli.cli_doctor_status()
+        assert ready is True
+        assert detail == cli
+
+    @pytest.mark.parametrize("make_path", [
+        pytest.param(lambda tmp_path: str(tmp_path / "browser-use"), id="missing-file"),
+        pytest.param(lambda tmp_path: _chmod_nonexecutable(tmp_path), id="stale-nonexecutable", marks=pytest.mark.platforms("posix")),
+    ])
+    def test_broken_resolved_path_is_not_ready(self, tmp_path, monkeypatch, make_path):
+        """PM's record can outlive the file it points to (deleted, or chmod'd away) — the resolver
+        itself only checks ``is_file()`` (``pm.python_tool``/``_tool``), so doctor must catch both
+        the same way ``browser_tool_install._agent_browser_candidate_present`` catches a stale
+        agent-browser binary."""
+        path = make_path(tmp_path)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [path])
+        ready, detail = bu_cli.cli_doctor_status()
+        assert ready is False
+        assert "not executable" in detail
+
+    def test_never_executes_the_binary(self, tmp_path, monkeypatch):
+        """Discovery must not run the CLI — only stat it. A script that would leave a trace if
+        executed must not do so when only readiness is checked."""
+        marker = tmp_path / "ran"
+        cli_path = tmp_path / "browser-use"
+        cli_path.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", encoding="utf-8")
+        cli_path.chmod(cli_path.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli_path)])
+        ready, detail = bu_cli.cli_doctor_status()
+        assert ready is True
+        assert not marker.exists()
 
 
 class TestSubprocessEnvironment:
