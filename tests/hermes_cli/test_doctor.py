@@ -205,6 +205,79 @@ class TestDoctorToolAvailabilitySummary:
         assert rows and all(status == "ok" for status, _, _ in rows)
 
 
+class TestDoctorBrowserUseCliStatus:
+    """Confirmed doctor false positive: ``browser_exec``'s ``check_fn`` (``is_browser_use_cli_mode``)
+    intentionally stays True once ``browser.backend: browser-use`` is selected explicitly — even
+    when the managed CLI is missing or broken — so the generic toolset loop printed a green
+    ``check_ok`` for a tool that cannot run. ``_doctor_browser_use_row`` substitutes the real
+    managed-resolver check (``tools.browser_use_cli.cli_doctor_status``, same resolver runtime
+    uses) so doctor never reports green for an unmet explicit selection."""
+
+    def test_explicit_backend_without_cli_warns_not_green(self, monkeypatch):
+        import tools.browser_use_cli as bu_cli
+
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
+        monkeypatch.setattr(bu_cli, "cli_doctor_status", lambda: (False, "not installed"))
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: (["browser-use"], []),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_tools._check_tool_availability(False)
+        line = next(l for l in buf.getvalue().splitlines() if "browser-use" in l)
+
+        assert "⚠" in line and "✓" not in line
+        assert "hermes tools" in line
+
+    def test_explicit_backend_with_ready_cli_reports_ok(self, monkeypatch):
+        import tools.browser_use_cli as bu_cli
+
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
+        monkeypatch.setattr(bu_cli, "cli_doctor_status", lambda: (True, "/opt/pm/browser-use"))
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: (["browser-use"], []),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_tools._check_tool_availability(False)
+        line = next(l for l in buf.getvalue().splitlines() if "browser-use" in l)
+
+        assert "✓" in line and "⚠" not in line
+
+    def test_inactive_mode_leaves_generic_unavailable_row_untouched(self, monkeypatch):
+        """Camofox / backend off / unset-with-no-CLI: the existing generic warn is already
+        correct and must not be replaced or duplicated."""
+        import tools.browser_use_cli as bu_cli
+
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: False)
+        unavailable = [{"name": "browser-use", "env_vars": [], "tools": ["browser_exec"]}]
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_tools._check_tool_availability(False)
+        lines = [l for l in buf.getvalue().splitlines() if "browser-use" in l]
+
+        assert len(lines) == 1
+        assert "system dependency not met" in lines[0]
+
+
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
     Chinese locale (GBK) because `.env` was read with Path.read_text(encoding="utf-8") which

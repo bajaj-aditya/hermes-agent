@@ -260,6 +260,24 @@ def _find_cli() -> Optional[List[str]]:
     return [str(binary)] if binary is not None else None
 
 
+def cli_doctor_status() -> Tuple[bool, str]:
+    """Read-only ``hermes doctor`` diagnostic: does the CLI this session would actually invoke
+    exist and remain executable? Resolves through the SAME managed resolver as runtime
+    (:func:`_find_cli` / ``pm.python_tool``), so doctor and the real tool call agree — a stale or
+    chmod'd-away binary is caught here the same way ``browser_tool_install._agent_browser_candidate_present``
+    catches it for agent-browser. File/executable-bit check only, never a real invocation: this
+    codebase avoids executing readiness probes (see the Windows .cmd console-flash note on that
+    same agent-browser check) and browser-use's CLI flags aren't a contract we own. Never installs,
+    downloads, or opens a browser. Returns ``(ready, detail)``."""
+    cmd = _find_cli()
+    if not cmd:
+        return False, "not installed"
+    binary = cmd[0]
+    if not os.path.isfile(binary) or (os.name != "nt" and not os.access(binary, os.X_OK)):
+        return False, f"found at {binary} but not executable"
+    return True, binary
+
+
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     """Provision the pinned CLI in PM's isolated environment; never raises."""
     try:

@@ -140,6 +140,34 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     return rows
 
 
+def _doctor_browser_use_row() -> tuple[str, str, str] | None:
+    """Real Browser Use CLI readiness for the ``browser-use`` toolset row.
+
+    ``browser_exec``'s ``check_fn`` (``is_browser_use_cli_mode``) intentionally stays True once
+    ``browser.backend: browser-use`` is selected explicitly, even if the CLI itself is missing or
+    broken — the tool must stay visible so the model can see the "not installed" fallback schema
+    and tell the user to run ``hermes tools`` (see ``tools/browser_use_cli.py``). That is correct
+    for the model-facing tool, but it makes the generic doctor loop print a green
+    ``check_ok("browser-use", ...)`` for a CLI that cannot actually run. Doctor instead reports the
+    SAME managed-resolver truth the real tool call will hit, via ``cli_doctor_status()``.
+
+    Returns ``None`` when Browser Use is not the active mode at all (Camofox, backend "off", or
+    unset with no CLI) — the generic loop's existing unavailable/warn row already covers that
+    case correctly and is left untouched.
+    """
+    try:
+        from tools.browser_use_cli import cli_doctor_status, is_browser_use_cli_mode
+    except Exception:
+        return None
+    if not is_browser_use_cli_mode():
+        return None
+    ready, detail = cli_doctor_status()
+    if ready:
+        return "ok", "browser-use", f"({detail})"
+    return ("warn", "browser-use",
+            f"(CLI {detail} — run `hermes tools` (Browser Automation → Browser Use) to install it)")
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
@@ -511,9 +539,20 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         if web_rows:
             available = [tid for tid in available if tid != "web"]
             unavailable = [item for item in unavailable if item.get("name") != "web"]
+    # browser-use's check_fn answers "is this mode configured", not "does the CLI actually run" —
+    # substitute the real managed-resolver check so an explicit-but-unmet selection isn't green.
+    browser_use_row = None
+    if "browser-use" in available or any(item.get("name") == "browser-use" for item in unavailable):
+        browser_use_row = _doctor_browser_use_row()
+        if browser_use_row is not None:
+            available = [tid for tid in available if tid != "browser-use"]
+            unavailable = [item for item in unavailable if item.get("name") != "browser-use"]
     for tid in available:
         check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
+        (check_ok if status == "ok" else check_warn)(label, detail)
+    if browser_use_row is not None:
+        status, label, detail = browser_use_row
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
