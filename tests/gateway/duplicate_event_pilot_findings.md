@@ -7,11 +7,16 @@ Logs of the real runs: `/home/hermes/.hermes/kanban/workspaces/t_7b8c0aa1/pilot-
 ## Rerun
 
 ```bash
-PV=/home/hermes/.hermes/kanban/workspaces/t_7b8c0aa1/pilot-venv
-python -m pm.build_env --source . --out "$PV" --group dev --group test   # fresh build, not a moved venv
+CHECKOUT=/path/to/this/checkout          # worktree containing the two test files
+PV=/path/of/your/choice/pilot-venv       # new, empty directory for the isolated test environment
+cd "$CHECKOUT"
+python -m pm.build_env --source . --out "$PV" --group dev --group test   # fresh build; never move a venv
 HERMES_PYTHON=$PV/bin/python scripts/run_tests.sh tests/gateway/test_duplicate_event_pilot.py -v -rxX
 HERMES_PYTHON=$PV/bin/python scripts/run_tests.sh tests/gateway/test_duplicate_event_pilot.py -v --runxfail   # shows the defect failure
 ```
+(`python` must be the checkout's bootstrapped interpreter. In the original run it was
+`/home/hermes/.hermes/hermes-agent/venv/bin/python`, with
+`PV=/home/hermes/.hermes/kanban/workspaces/t_7b8c0aa1/pilot-venv`.)
 Use `$TMPDIR` for any scratch files. The reconnect test goes through `carry_dedup()`, which calls
 `carry_inbound_dedup(inbound_dedup_caches(adapter), new)` where that helper exists (older sources, e.g. fork main
 `5eb1381f`) and `carry_inbound_dedup(adapter, new)` otherwise; same real seam either way.
@@ -54,13 +59,30 @@ at-most-once only for serialized callers.
 
 ## Facts that bound the claims
 
-- No production code derives a kanban idempotency key from an inbound Discord (or any chat) message id. Only
-  the kanban CLI arg and the api_server `Idempotency-Key` header use keys. Scenario 1's "one logical task"
-  therefore rests on the in-memory dedup only; the kanban test shows what a future integration would get.
+- In the seams inspected (Discord ingress/dispatch, base handle_message/queue, `create_task`, kanban notifier),
+  no code derives a kanban idempotency key from an inbound chat message id; the only key sources found were
+  the kanban CLI arg and the api_server `Idempotency-Key` header. Behaviour driven by the agent itself (e.g. a
+  prompt-derived `kanban create` with a key) was not tested. Scenario 1's first test therefore shows that, with
+  a mocked handler creating one real temporary task WITHOUT any key, duplicate ingress yields one row through
+  the in-memory dedup alone. The separate stable-key test uses a test-supplied key and handler: it illustrates
+  what an integration could get and is not production wiring.
 - Inbound dedup is in-memory, TTL 300s: a replay after expiry or after an un-carried process restart is
   admitted again (not tested; read from `helpers.py:20-45`).
 - Discord ledger rows are written only when `DISCORD_MISSED_MESSAGE_BACKFILL` is enabled (adapter checks
   `_missed_message_backfill_enabled`); tests enable it.
+
+## Parent review and replay (reported by parent; not re-run by this author)
+
+- Installed baseline `818c13be1dc`: 9 tests → 8 passed, 1 strict xfail; `--runxfail` → exactly 1 failure
+  (`2 live tasks for one idempotency key`), 8 passed.
+- Nearby existing suites `test_message_deduplicator.py`, `test_discord_double_dispatch.py`,
+  `test_kanban_notifier.py`: 22 passed.
+- Separate fork-main worktree, only the 2 test files cherry-picked onto
+  `5eb1381f3965fd96454d1c32f6bbefcd99cda347`: same 9-test results.
+- Parent logs: `parent-rerun.log/.xml`, `parent-runxfail.log/.xml`, `fork-main-replay.log/.xml`,
+  `parent-nearby-regressions.log`.
+- Publication PR: https://github.com/bajaj-aditya/hermes-agent/pull/2 at head
+  `6cf9ced7ada8b79fc6fba86517ae26d46ecd8678` before this documentation correction. Merge status is not asserted here.
 
 ## Not checked (unchecked boundaries)
 
